@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">TripGo</string>
+    <string name="title_activity_main">TripGo</string>
+    <string name="package_name">com.tripgo.app</string>
+    <string name="custom_url_scheme">com.tripgo.app</string>
+</resources>

@@ -1,0 +1,25 @@
+{
+  "appId": "com.tripgo.app",
+  "appName": "TripGo",
+  "webDir": "www",
+  "server": {
+    "url": "https://trip-clone-mocha.vercel.app",
+    "androidScheme": "https"
+  },
+  "android": {
+    "allowMixedContent": true
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 800,
+      "launchAutoHide": true,
+      "backgroundColor": "#0a3d91",
+      "showSpinner": true,
+      "spinnerColor": "#ffffff"
+    },
+    "StatusBar": {
+      "style": "LIGHT",
+      "backgroundColor": "#0a3d91"
+    }
+  }
+}

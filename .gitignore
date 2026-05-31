@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+android/app/build/
+android/build/
+android/.gradle/
+android/captures/
+*.apk
+*.aab
+ios/App/build/
+ios/App/Pods/
+ios/DerivedData/
+
+# Signing secrets — NEVER commit these
+*.keystore
+*.jks
+keystore.properties
+android/local.properties
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.log
+.idea/
+.vscode/

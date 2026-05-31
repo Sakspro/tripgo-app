@@ -1,0 +1,87 @@
+name: Build mobile apps
+
+# Builds the TripGo native apps:
+#  - android: debug APK on an Ubuntu runner (uploaded as an artifact)
+#  - ios:     compiles the app on a macOS runner (unsigned, for verification)
+#
+# Triggers on pushes to main and on manual dispatch.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  android:
+    name: Android (debug APK)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Install dependencies
+        run: npm ci || npm install
+
+      - name: Sync Capacitor
+        run: npx cap sync android
+
+      - name: Build debug APK
+        working-directory: android
+        run: chmod +x ./gradlew && ./gradlew assembleDebug --no-daemon
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: TripGo-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+
+  ios:
+    name: iOS (compile check, unsigned)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci || npm install
+
+      - name: Sync Capacitor (iOS)
+        run: npx cap sync ios
+
+      - name: Build (unsigned, simulator SDK)
+        run: |
+          xcodebuild \
+            -project ios/App/App.xcodeproj \
+            -scheme App \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+# ---------------------------------------------------------------------------
+# To produce a SIGNED iOS .ipa for TestFlight / the App Store, add a job that
+# imports your Apple signing assets from repository secrets, e.g.:
+#
+#   - Apple Distribution certificate (.p12)  -> secret BUILD_CERTIFICATE_BASE64
+#   - Certificate password                    -> secret P12_PASSWORD
+#   - Provisioning profile (.mobileprovision) -> secret PROVISIONING_PROFILE_BASE64
+#   - Keychain password                       -> secret KEYCHAIN_PASSWORD
+#
+# Then use `xcodebuild -scheme App archive` + `xcodebuild -exportArchive`
+# with an ExportOptions.plist. See:
+# https://docs.github.com/actions/deployment/deploying-xcode-applications/installing-an-apple-certificate-on-macos-runners-for-xcode-development
+# ---------------------------------------------------------------------------
