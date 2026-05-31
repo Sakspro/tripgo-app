@@ -1,87 +1,178 @@
 name: Build mobile apps
 
-# Builds the TripGo native apps:
-#  - android: debug APK on an Ubuntu runner (uploaded as an artifact)
-#  - ios:     compiles the app on a macOS runner (unsigned, for verification)
-#
-# Triggers on pushes to main and on manual dispatch.
+# - push to main / PR : quick verification builds (debug APK + iOS compile check)
+# - push a tag vX.Y.Z : signed release APK + AAB, signed iOS .ipa (if Apple
+#                        secrets are present), and a GitHub Release with the
+#                        artifacts attached.
 on:
   push:
     branches: [main]
+    tags: ['v*']
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
-  android:
+  # ---------------- Verification (non-tag) ----------------
+  android-debug:
     name: Android (debug APK)
+    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
-      - name: Set up JDK 21
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 21
-
-      - name: Install dependencies
-        run: npm ci || npm install
-
-      - name: Sync Capacitor
-        run: npx cap sync android
-
-      - name: Build debug APK
-        working-directory: android
+        with: { node-version: 22, cache: npm }
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 21 }
+      - run: npm ci || npm install
+      - run: npx cap sync android
+      - working-directory: android
         run: chmod +x ./gradlew && ./gradlew assembleDebug --no-daemon
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: TripGo-debug-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
 
   ios:
     name: iOS (compile check, unsigned)
+    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci || npm install
-
-      - name: Sync Capacitor (iOS)
-        run: npx cap sync ios
-
+        with: { node-version: 22, cache: npm }
+      - run: npm ci || npm install
+      - run: npx cap sync ios
       - name: Build (unsigned, simulator SDK)
         run: |
-          xcodebuild \
-            -project ios/App/App.xcodeproj \
-            -scheme App \
-            -configuration Debug \
-            -sdk iphonesimulator \
+          xcodebuild -project ios/App/App.xcodeproj -scheme App \
+            -configuration Debug -sdk iphonesimulator \
             -destination 'generic/platform=iOS Simulator' \
-            CODE_SIGNING_ALLOWED=NO \
-            build
+            CODE_SIGNING_ALLOWED=NO build
 
-# ---------------------------------------------------------------------------
-# To produce a SIGNED iOS .ipa for TestFlight / the App Store, add a job that
-# imports your Apple signing assets from repository secrets, e.g.:
-#
-#   - Apple Distribution certificate (.p12)  -> secret BUILD_CERTIFICATE_BASE64
-#   - Certificate password                    -> secret P12_PASSWORD
-#   - Provisioning profile (.mobileprovision) -> secret PROVISIONING_PROFILE_BASE64
-#   - Keychain password                       -> secret KEYCHAIN_PASSWORD
-#
-# Then use `xcodebuild -scheme App archive` + `xcodebuild -exportArchive`
-# with an ExportOptions.plist. See:
-# https://docs.github.com/actions/deployment/deploying-xcode-applications/installing-an-apple-certificate-on-macos-runners-for-xcode-development
-# ---------------------------------------------------------------------------
+  # ---------------- Release (tag vX.Y.Z) ----------------
+  android-release:
+    name: Android (signed APK + AAB)
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 21 }
+      - run: npm ci || npm install
+      - run: npx cap sync android
+
+      - name: Decode keystore
+        run: echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > "$GITHUB_WORKSPACE/android/tripgo-release.keystore"
+      - name: Write keystore.properties
+        run: |
+          cat > "$GITHUB_WORKSPACE/android/keystore.properties" <<EOF
+          storeFile=$GITHUB_WORKSPACE/android/tripgo-release.keystore
+          storePassword=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}
+          keyPassword=${{ secrets.ANDROID_KEY_PASSWORD }}
+          EOF
+
+      - name: Build signed APK + AAB
+        working-directory: android
+        run: chmod +x ./gradlew && ./gradlew assembleRelease bundleRelease --no-daemon
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-release
+          path: |
+            android/app/build/outputs/apk/release/app-release.apk
+            android/app/build/outputs/bundle/release/app-release.aab
+
+  ios-release:
+    name: iOS (signed .ipa)
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: macos-latest
+    steps:
+      - name: Check for Apple signing secrets
+        id: guard
+        run: |
+          if [ -n "${{ secrets.BUILD_CERTIFICATE_BASE64 }}" ] && [ -n "${{ secrets.PROVISIONING_PROFILE_BASE64 }}" ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Apple signing secrets not set — skipping signed iOS build. Add BUILD_CERTIFICATE_BASE64, P12_PASSWORD, PROVISIONING_PROFILE_BASE64, KEYCHAIN_PASSWORD, APPLE_TEAM_ID to enable."
+          fi
+      - if: steps.guard.outputs.ok == 'true'
+        uses: actions/checkout@v4
+      - if: steps.guard.outputs.ok == 'true'
+        uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - if: steps.guard.outputs.ok == 'true'
+        run: npm ci || npm install
+      - if: steps.guard.outputs.ok == 'true'
+        run: npx cap sync ios
+
+      - name: Import certificate & provisioning profile
+        if: steps.guard.outputs.ok == 'true'
+        env:
+          BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+          PROVISIONING_PROFILE_BASE64: ${{ secrets.PROVISIONING_PROFILE_BASE64 }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          CERT_PATH=$RUNNER_TEMP/cert.p12
+          PROFILE_PATH=$RUNNER_TEMP/profile.mobileprovision
+          KEYCHAIN=$RUNNER_TEMP/app.keychain-db
+          echo "$BUILD_CERTIFICATE_BASE64" | base64 -d > "$CERT_PATH"
+          echo "$PROVISIONING_PROFILE_BASE64" | base64 -d > "$PROFILE_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$CERT_PATH" -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security list-keychain -d user -s "$KEYCHAIN"
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          cp "$PROFILE_PATH" ~/Library/MobileDevice/Provisioning\ Profiles/
+
+      - name: Archive & export IPA
+        if: steps.guard.outputs.ok == 'true'
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          cat > $RUNNER_TEMP/ExportOptions.plist <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>method</key><string>app-store</string>
+            <key>teamID</key><string>${APPLE_TEAM_ID}</string>
+            <key>signingStyle</key><string>manual</string>
+          </dict></plist>
+          EOF
+          xcodebuild -project ios/App/App.xcodeproj -scheme App \
+            -configuration Release -archivePath $RUNNER_TEMP/App.xcarchive \
+            -destination 'generic/platform=iOS' archive
+          xcodebuild -exportArchive -archivePath $RUNNER_TEMP/App.xcarchive \
+            -exportOptionsPlist $RUNNER_TEMP/ExportOptions.plist \
+            -exportPath $RUNNER_TEMP/export
+
+      - name: Upload IPA
+        if: steps.guard.outputs.ok == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-release
+          path: ${{ runner.temp }}/export/*.ipa
+
+  github-release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [android-release, ios-release]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: artifacts }
+      - name: Create release with artifacts
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/**/app-release.apk
+            artifacts/**/app-release.aab
+            artifacts/**/*.ipa

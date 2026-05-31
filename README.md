@@ -65,6 +65,45 @@ or simulator, and **Product → Run** (or **Product → Archive** to produce an
 No Mac? Use a macOS CI runner (e.g. GitHub Actions `macos-latest`, Codemagic,
 Bitrise, or Ionic Appflow) to build and sign the iOS app in the cloud.
 
+## CI / Releases (GitHub Actions)
+
+`.github/workflows/build.yml` runs on every push and on version tags:
+
+- **push to `main`** → builds a **debug APK** (artifact) and an **iOS compile check**.
+- **push a tag `vX.Y.Z`** → builds the **signed release APK + AAB**, builds the
+  **signed iOS `.ipa`** (only if Apple secrets are present), and publishes a
+  **GitHub Release** with the artifacts attached.
+
+Cut a release:
+
+```bash
+git tag v1.0.0 && git push origin v1.0.0
+```
+
+### Android signing secrets (already configured)
+`ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`,
+`ANDROID_KEY_PASSWORD`.
+
+### iOS signing secrets (add to enable the signed `.ipa`)
+Requires an Apple Developer account. Add these repo secrets; until then the
+iOS-release job skips with a warning (the rest of the pipeline still works):
+
+| Secret | What it is |
+| --- | --- |
+| `BUILD_CERTIFICATE_BASE64` | base64 of your Apple Distribution cert (`.p12`) |
+| `P12_PASSWORD` | password for the `.p12` |
+| `PROVISIONING_PROFILE_BASE64` | base64 of the `.mobileprovision` |
+| `KEYCHAIN_PASSWORD` | any temporary keychain password for CI |
+| `APPLE_TEAM_ID` | your 10-char Apple Team ID |
+
+```bash
+base64 -i dist.p12 | gh secret set BUILD_CERTIFICATE_BASE64 --repo Sakspro/tripgo-app
+base64 -i profile.mobileprovision | gh secret set PROVISIONING_PROFILE_BASE64 --repo Sakspro/tripgo-app
+gh secret set P12_PASSWORD --repo Sakspro/tripgo-app
+gh secret set KEYCHAIN_PASSWORD --repo Sakspro/tripgo-app
+gh secret set APPLE_TEAM_ID --repo Sakspro/tripgo-app
+```
+
 ## Structure
 
 ```
@@ -73,5 +112,8 @@ tripgo-app/
 ├── www/index.html          # offline/loading fallback screen
 ├── android/                # native Android (Gradle) project
 ├── ios/                    # native Xcode project (build on macOS)
-└── TripGo-debug.apk        # prebuilt Android debug APK
+├── .github/workflows/      # CI: debug builds + signed release + GitHub Release
+├── TripGo-debug.apk        # prebuilt Android debug APK
+├── TripGo-release.apk      # signed release APK
+└── TripGo-release.aab      # signed Play Store bundle
 ```
